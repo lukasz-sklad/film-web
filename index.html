@@ -130,7 +130,12 @@
       if (!resp.ok) {
         throw new Error(`Błąd pobierania ${url}: HTTP ${resp.status}`);
       }
-      const total = parseInt(resp.headers.get("content-length") || "0", 10);
+      const rawTotal = parseInt(resp.headers.get("content-length") || "0", 10);
+      const encoded = !!resp.headers.get("content-encoding");
+      // When served with gzip/br, Content-Length is the compressed size (~11.9 MB),
+      // while reader.read() yields decompressed WASM bytes (~32.7 MB).
+      const UNCOMPRESSED_EST = 34288000;
+      const total = (!encoded && rawTotal > 20 * 1024 * 1024) ? rawTotal : UNCOMPRESSED_EST;
       if (!resp.body) {
         setProgress(50, "Pobieranie silnika WebAssembly…", "Buforowanie…");
         const buf = await resp.arrayBuffer();
@@ -146,14 +151,10 @@
         chunks.push(value);
         received += value.byteLength;
         const mb = (received / (1024 * 1024)).toFixed(1);
-        if (total > 0) {
-          const ratio = Math.min(1, received / total);
-          const totalMb = (total / (1024 * 1024)).toFixed(1);
-          setProgress(5 + ratio * 75, "Pobieranie silnika WebAssembly…", `${mb} MB / ${totalMb} MB (${Math.round(ratio * 100)}%)`);
-        } else {
-          const estRatio = Math.min(0.95, received / (16 * 1024 * 1024));
-          setProgress(5 + estRatio * 75, "Pobieranie silnika WebAssembly…", `Pobrano ${mb} MB…`);
-        }
+        const effTotal = Math.max(total, received);
+        const ratio = Math.min(1, received / effTotal);
+        const totalMb = (effTotal / (1024 * 1024)).toFixed(1);
+        setProgress(5 + ratio * 75, "Pobieranie silnika WebAssembly…", `${mb} MB / ${totalMb} MB (${Math.round(ratio * 100)}%)`);
       }
       const out = new Uint8Array(received);
       let offset = 0;
