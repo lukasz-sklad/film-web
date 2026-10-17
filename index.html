@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <meta name="color-scheme" content="dark">
+  <title>FilmCraft</title>
+  <link rel="icon" type="image/png" href="./favicon.png?v=a08b6a0165e60875">
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #141414;
+      color: #e6e6e6;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    #filmcraft_canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+      outline: none;
+    }
+    #loading {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      background: #141414;
+      z-index: 10;
+      transition: opacity 160ms ease-out;
+    }
+    #loading.done { opacity: 0; pointer-events: none; }
+    #loading .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 20px;
+      font-weight: 600;
+      letter-spacing: 0.2px;
+      color: #f0f0f0;
+    }
+    #loading .brand img {
+      width: 34px;
+      height: 34px;
+      border-radius: 7px;
+    }
+    #loading .spinner {
+      width: 28px;
+      height: 28px;
+      border: 2.5px solid #2b2b2b;
+      border-top-color: #2f6bdf;
+      border-radius: 50%;
+      animation: spin 0.75s linear infinite;
+    }
+    #loading .progress-wrap {
+      width: 260px;
+      height: 6px;
+      background: #262626;
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    #loading .progress-bar {
+      width: 0%;
+      height: 100%;
+      background: linear-gradient(90deg, #2f6bdf, #5a95ff);
+      transition: width 0.12s ease-out;
+    }
+    #loading .msg {
+      font-size: 13px;
+      color: #a8a8a8;
+      max-width: 520px;
+      text-align: center;
+      line-height: 1.45;
+      padding: 0 20px;
+    }
+    #loading .sub {
+      font-size: 11px;
+      color: #707070;
+      font-variant-numeric: tabular-nums;
+    }
+    #loading.error .spinner { display: none; }
+    #loading.error .progress-wrap { display: none; }
+    #loading.error .msg { color: #e36c6c; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <canvas id="filmcraft_canvas"></canvas>
+  <div id="loading">
+    <div class="brand">
+      <img src="./favicon.png?v=a08b6a0165e60875" alt="">
+      <span>FilmCraft</span>
+    </div>
+    <div class="spinner"></div>
+    <div class="progress-wrap"><div class="progress-bar" id="loading_bar"></div></div>
+    <div class="msg" id="loading_msg">Inicjalizacja środowiska…</div>
+    <div class="sub" id="loading_sub">Przygotowywanie modułów</div>
+  </div>
+  <script type="module">
+    const loading = document.getElementById("loading");
+    const msg = document.getElementById("loading_msg");
+    const sub = document.getElementById("loading_sub");
+    const bar = document.getElementById("loading_bar");
+    const build = "a08b6a0165e60875";
+    // Cache-busting query string on the script and wasm URLs when `a08b6a0165e60875` was stamped by
+    // `cargo xtask web`; empty when serving `apps/filmcraft-web/web/` directly during development.
+    const ver = build.startsWith("__") ? "" : `?v=${build}`;
+
+    function setProgress(pct, statusText, subText) {
+      if (bar && typeof pct === "number") {
+        bar.style.width = `${Math.max(0, Math.min(100, pct)).toFixed(1)}%`;
+      }
+      if (msg && statusText) msg.textContent = statusText;
+      if (sub && subText !== undefined) sub.textContent = subText;
+    }
+
+    async function fetchWasmWithProgress(url) {
+      setProgress(5, "Pobieranie silnika WebAssembly…", "Łączenie z serwerem…");
+      const resp = await fetch(url, { credentials: "same-origin" });
+      if (!resp.ok) {
+        throw new Error(`Błąd pobierania ${url}: HTTP ${resp.status}`);
+      }
+      const total = parseInt(resp.headers.get("content-length") || "0", 10);
+      if (!resp.body) {
+        setProgress(50, "Pobieranie silnika WebAssembly…", "Buforowanie…");
+        const buf = await resp.arrayBuffer();
+        setProgress(85, "Kompilacja modułu WebAssembly…", "100%");
+        return buf;
+      }
+      const reader = resp.body.getReader();
+      const chunks = [];
+      let received = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        received += value.byteLength;
+        const mb = (received / (1024 * 1024)).toFixed(1);
+        if (total > 0) {
+          const ratio = Math.min(1, received / total);
+          const totalMb = (total / (1024 * 1024)).toFixed(1);
+          setProgress(5 + ratio * 75, "Pobieranie silnika WebAssembly…", `${mb} MB / ${totalMb} MB (${Math.round(ratio * 100)}%)`);
+        } else {
+          const estRatio = Math.min(0.95, received / (16 * 1024 * 1024));
+          setProgress(5 + estRatio * 75, "Pobieranie silnika WebAssembly…", `Pobrano ${mb} MB…`);
+        }
+      }
+      const out = new Uint8Array(received);
+      let offset = 0;
+      for (const c of chunks) {
+        out.set(c, offset);
+        offset += c.byteLength;
+      }
+      setProgress(85, "Kompilacja i inicjalizacja WebAssembly…", "Proszę czekać…");
+      return out.buffer;
+    }
+
+    const CORS_PROXIES = [
+      (u) => `https://lmk.one/api/cors?url=${encodeURIComponent(u)}`,
+      (u) => `https://corsproxy.io/?url=${encodeURIComponent(u)}`
+    ];
+
+    async function fetchWithCorsFallback(fileUrl, fileName) {
+      const isCrossOrigin = /^https?:\/\//i.test(fileUrl) && !fileUrl.startsWith(window.location.origin);
+      const candidates = isCrossOrigin
+        ? [fileUrl, ...CORS_PROXIES.map((fn) => fn(fileUrl))]
+        : [fileUrl];
+
+      let lastErr = null;
+      for (let i = 0; i < candidates.length; i++) {
+        const candidateUrl = candidates[i];
+        const viaProxy = i > 0;
+        try {
+          setProgress(
+            94,
+            `Wczytywanie pliku: ${fileName}…`,
+            viaProxy ? "Pobieranie przez proxy CORS…" : "Pobieranie pliku…"
+          );
+          const resp = await fetch(candidateUrl, {
+            credentials: isCrossOrigin ? "omit" : "same-origin"
+          });
+          if (!resp.ok) {
+            throw new Error(`HTTP ${resp.status}`);
+          }
+          const bytes = new Uint8Array(await resp.arrayBuffer());
+          if (bytes.byteLength === 0) {
+            throw new Error("Pusty plik (0 bajtów)");
+          }
+          return bytes;
+        } catch (err) {
+          lastErr = err;
+          console.warn(`[FilmCraft] Próba pobrania (${viaProxy ? "proxy #" + i : "bezpośrednia"}) nie powiodła się:`, err);
+        }
+      }
+      throw lastErr || new Error("Nie udało się pobrać pliku");
+    }
+
+    window.addEventListener("contextmenu", (e) => {
+      if (e.target && e.target.id === "filmcraft_canvas") e.preventDefault();
+    });
+    window.addEventListener("keydown", (e) => {
+      if ((e.ctrlKey || e.metaKey) && ["s", "o", "n", "z", "y", "k", "m", "i"].includes(e.key.toLowerCase())) {
+        e.preventDefault();
+      }
+    }, { capture: true });
+
+    try {
+      setProgress(2, "Ładowanie modułu JS…", "Inicjalizacja…");
+      const { default: init, start } = await import(`./filmcraft_web.js${ver}`);
+      const wasmBytes = await fetchWasmWithProgress(`./filmcraft_web_bg.wasm${ver}`);
+      await init({ module_or_path: wasmBytes });
+      setProgress(92, "Uruchamianie interfejsu graficznego…", "Inicjalizacja WebGPU / WebGL2…");
+      await start("filmcraft_canvas");
+
+      // Handle ?file=... parameter if provided
+      const params = new URLSearchParams(window.location.search);
+      const fileUrl = params.get("file");
+      if (fileUrl && window.filmcraft) {
+        const cleanPath = fileUrl.split("?")[0].split("#")[0];
+        const fileName = decodeURIComponent(cleanPath.split("/").pop() || "media.mp4");
+        try {
+          const bytes = await fetchWithCorsFallback(fileUrl, fileName);
+          setProgress(98, `Otwieranie: ${fileName}…`, `${(bytes.byteLength / 1024).toFixed(1)} KB`);
+          const fileObj = new File([bytes], fileName);
+          const lower = fileName.toLowerCase();
+          if (lower.endsWith(".fcproj")) {
+            await window.filmcraft.openProject(fileObj);
+          } else {
+            const imported = await window.filmcraft.importFiles([fileObj]);
+            if (imported && Array.isArray(imported.items) && imported.items.length > 0) {
+              await window.filmcraft.execute("file.newSequenceFromClip", { items: imported.items });
+            }
+          }
+        } catch (fileErr) {
+          console.warn("[FilmCraft] Nie udało się wczytać pliku z ?file=:", fileErr);
+        }
+      }
+
+      setProgress(100, "Gotowe!", "");
+      loading.classList.add("done");
+      setTimeout(() => loading.remove(), 200);
+    } catch (e) {
+      console.error("FilmCraft failed to start:", e);
+      // An adapter whose WebGPU device cannot be created (e.g. an older driver or browser flag)
+      // still runs on WebGL2 with the CPU compositor: reload once with `?webgl`.
+      const params = new URLSearchParams(window.location.search);
+      if (!params.has("webgl")) {
+        params.set("webgl", "1");
+        msg.textContent = "Przełączanie na tryb kompatybilności WebGL2…";
+        window.location.replace(`${window.location.pathname}?${params}`);
+      } else {
+        loading.classList.add("error");
+        msg.textContent =
+          "FilmCraft nie mógł uruchomić grafiki (WebGPU / WebGL2). Sprawdź, czy akceleracja sprzętowa jest włączona w ustawieniach przeglądarki.";
+        if (sub) sub.textContent = String(e && e.message ? e.message : e);
+      }
+    }
+  </script>
+</body>
+</html>
